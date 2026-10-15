@@ -29,6 +29,34 @@ The goal is to make IoT communication more predictable, recoverable, and trustwo
 ---
 ## 🔬 Project Scope & Twin-Engine Validation Model
 LIFELINE is implemented as a zero-dependency C++17 core messaging protocol deployed across a **Twin-Engine Validation Model**: a local native terminal chaos simulator for mass metric benchmarking and a live cloud-emulated Wokwi firmware environment for component interaction testing.
+### 🏁 Replicating on a Fresh Linux Environment (Ubuntu / WSL2)
+Copy and paste this single script sequence to configure toolchains, build wildcards, and execute the chaos benchmarks:
+
+```bash
+```bash
+# =========================================================================
+# LIFELINE: Complete Fresh Linux Environment Setup & Execution Script
+# =========================================================================
+
+# Step 1: Update system packages and install the complete C++17 build toolchain
+sudo apt update && sudo apt install -y build-essential cmake ninja-build git g++
+
+# Step 2: Unzip the main project repository archive file
+# (Assumes your lifeline.zip file is sitting inside your active directory)
+python3 -m zipfile -e lifeline.zip .
+
+# Step 3: Change directory into the freshly extracted source workspace root folder
+cd lifeline
+
+# Step 4: Compile the zero-dependency C++17 protocol core natively via GCC
+# This configures our optimized include paths and compiles all source wildcards
+g++ -std=c++17 -O2 -Iinclude -I. -Ilifeline-main src/*.cpp sim/*.cpp -o lifeline_sim
+
+# Step 5: Run the Master 200-Seed Automated Chaos Evaluation Loop
+# This Subjects our core to 200 multi-fault campaigns to verify 0 violations
+./lifeline_sim --seeds 200
+```
+
 
 | System Component / Layer | Status | Implementation & Validation Method |
 | :--- | :--- | :--- |
