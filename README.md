@@ -10,18 +10,12 @@ LIFELINE is a zero-dependency C++17 messaging framework designed to preserve dat
 2. **Store & Protect:** Routine telemetry is managed in a flat, single-slot map that overwrites old entries to bound storage at **Constant Space O(K) complexity**, completely avoiding memory crashes. High-priority alarms are stamped with a unique `(boot_epoch, per_key_version)` tuple and written to an append-only Write-Ahead flash journal with a trailing CRC32 check before transmission.
 3. **Synchronize & Verify:** On link recovery, critical alarms skip the line via **Preemptive Priority**. The Python gateway receiver utilizes an atomic sequence validation block to drop duplicate frames, and references its SQLite ledger to permanently reject out-of-order, stale metrics.
 
-## 📦 Building and Running the Chaos Simulation
-To run the automated failure injection suite over 200 randomized multi-fault timelines (partitions, corruptions, reorder loops, and reboots), execute the following commands in your terminal:
+## 📦 Build and Test
+
+To compile and verify the core validation loops with your team's exact wildcards, execute:
 
 ```bash
-# Clone the repository and enter the directory
-git clone https://github.com/bala11420/lifeline.git
-cd lifeline
-
-# Compile the core simulation executable binary
 g++ -std=c++17 -O2 -Iinclude -I. src/*.cpp sim/*.cpp -o lifeline_sim
-
-# Run the 200-seed validation matrix campaign
 ./lifeline_sim --seeds 200
 ```
 
