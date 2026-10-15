@@ -1,0 +1,5 @@
+build/
+.venv/
+*.csv
+tests_bin
+tests_fast
