@@ -3,3 +3,8 @@ build/
 *.csv
 tests_bin
 tests_fast
+lifeline_sim
+tests_bin
+lifeline_sim
+tests_bin
+*.db
