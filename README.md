@@ -1,451 +1,238 @@
 # LIFELINE
-## Priority-First, Crash-Resilient Messaging for Offline IoT
 
-**InnoHacks 2.0 · TechSpark 2026 · IoT Problem 5**
+**Priority-first, crash-resilient messaging for offline IoT**
 
-**Team Matrix**
-- **B. Gangadhar** — Core Engine
-- **K. Dinesh Kumar** — Gateway
-- **R. Veera Poojitha** — Chaos Engine
 
----
 
-## 1. Overview
+> When connectivity fails, local protection continues. When connectivity returns, critical events recover first,
+> without silently losing accepted records, repeating application effects, or replacing newer decisions with older ones.
 
-LIFELINE is a fault-tolerant messaging framework designed for IoT systems that must continue operating when network connectivity becomes unreliable.
-
-Conventional IoT applications often depend on continuous communication with a remote server or cloud platform. During network outages, devices may lose collected data, delay emergency notifications, replay previously received commands, or overwrite newer information with stale values.
-
-These failures become especially serious in safety-sensitive environments, including rural monitoring systems, industrial facilities, healthcare environments, and disaster-response networks.
-
-LIFELINE addresses these challenges through three principles:
-
-1. **Act locally:** Critical monitoring and emergency responses continue without internet connectivity.
-2. **Store and protect:** Critical events are recorded safely, prioritized, and protected against duplicate processing and stale updates.
-3. **Synchronize and verify:** After connectivity returns, queued events are delivered in priority order and the recovered system state is checked against defined invariants.
-
-The goal is to make IoT communication more predictable, recoverable, and trustworthy under network and process failures.
+LIFELINE is a small, portable C++17 messaging core for IoT nodes, a Python + SQLite gateway, and a deterministic
+failure simulator that checks the claims. Its differentiator is **reproducible evidence**, not a claim of perfect reliability.
 
 ---
 
-## 2. Problem Statement
+## 1. The problem
 
-IoT devices frequently operate in environments where network availability cannot be guaranteed. A device may lose connectivity because of weak signals, damaged infrastructure, power interruptions, or temporary network congestion.
+The official problem statement names four failures of typical IoT systems:
 
-Without appropriate fault-handling mechanisms, these conditions can cause:
+1. Devices stop working or silently lose data when the network drops.
+2. Critical alerts (for example a gas leak) get stuck behind routine messages.
+3. Old commands replay after reconnection.
+4. Stale information overwrites newer state.
 
-- Loss of critical sensor events during an outage.
-- Emergency notifications being delayed behind routine telemetry.
-- Duplicate effects when previously transmitted commands are replayed.
-- Older measurements overwriting newer dashboard values.
-- Inconsistent state after a device or gateway restarts.
-- Difficulty verifying whether the recovered system contains the correct data.
+## 2. What LIFELINE does
 
-**LIFELINE's objective is to preserve critical event records, prioritize safety-related messages, prevent duplicate application effects, and reject stale updates during recovery.**
+Three principles:
 
----
+1. **Act locally.** The node reacts to a hazard on its own (alarm, valve interlock) without waiting for any network.
+2. **Store and protect.** Critical events go into an append-only, CRC32-protected journal. The node reports whether
+   each event was *durably accepted*, and keeps it until the gateway confirms it committed.
+3. **Synchronize and verify.** After reconnecting, critical records go first. The gateway commits each event once,
+   rejects older versions, and acknowledges only after its database commit. A simulator then checks the result.
 
-## 3. Project Objectives
+| Failure | Mechanism |
+|---|---|
+| Data lost during an outage | Local response first, then a durable journal. `submit()` returns `Accepted`, `Full` or `IoError`, never a silent drop |
+| Alert stuck behind routine traffic | Strict sender priority: Critical, then Control, then Telemetry. Telemetry keeps only the latest value per key, so a backlog cannot build up |
+| Old commands replay | Commands are absolute desired states (`SET VALVE CLOSED`, never a toggle) with a `(term, seq)` version. The actuator persists the decision and rejects older versions. Duplicates are harmless |
+| Stale data overwrites newer | Per-key `(epoch, version)` check at the gateway. A lower version never replaces a higher one |
+| Duplicate effects after retry | Each record has a sequence number. The gateway inserts it, updates state and advances its watermark in **one SQLite transaction**, then acknowledges. A repeat is acknowledged again but not re-applied |
 
-- Continue local safety monitoring without internet connectivity.
-- Store critical events in a crash-recoverable journal.
-- Bound routine telemetry storage by retaining the latest value for each configured key.
-- Prioritize critical alarms over routine messages.
-- Detect corrupted records using CRC32.
-- Track message sequences and versions to reject duplicate or stale updates.
-- Support safe synchronization after network recovery.
-- Validate behavior through repeatable failure-injection tests.
-- Measure invariant violations under controlled failure schedules.
+A record is **durably accepted** only when the storage write and sync both succeeded. An event cut off by a power
+failure before that point is reported as not accepted, and LIFELINE makes no claim about it.
 
----
-
-## 4. Three-Layer Trust Architecture
-
-### Layer 1 — Act Locally
-
-The edge node evaluates sensor readings locally and activates its alarm output when configured safety thresholds are exceeded.
-
-For example, a gas-monitoring node can evaluate an MQ2 sensor and trigger a local siren without waiting for a cloud response. A DHT22 sensor can provide temperature and humidity measurements for monitoring.
-
-The local safety path should remain independent of the remote messaging path.
-
-**Key principle:** A network outage must not prevent a locally implemented emergency response.
-
-> Sensor and hardware integration must be verified on the actual target device before claiming a working physical demonstration.
-
-### Layer 2 — Store and Protect
-
-LIFELINE separates critical events from routine telemetry.
-
-**Critical events**
-- Are recorded in an append-only journal.
-- Include sequence or version metadata.
-- Use CRC32 to detect record corruption.
-- Are retained for delivery and recovery according to the journal's capacity and error-handling rules.
-
-**Routine telemetry**
-- Uses a latest-value slot for each configured key.
-- Replaces older pending measurements with newer measurements for that key.
-- Avoids unbounded accumulation of routine data.
-
-If there are `K` configured telemetry keys, the latest-value map uses `O(K)` storage for the retained values, excluding key/value sizes and other system structures.
-
-**Important distinction:** CRC32 detects accidental corruption; it does not by itself guarantee durable writes. Crash safety also depends on journal layout, commit ordering, storage behavior, and recovery logic.
-
-### Layer 3 — Synchronize and Verify
-
-When connectivity returns, the system resumes communication.
-
-- Critical events receive priority over routine telemetry.
-- Sequence metadata supports duplicate detection.
-- Per-key versions prevent older measurements from replacing newer values.
-- The gateway records accepted events and state changes in a persistent ledger.
-- Tests evaluate whether the recovered state satisfies the required invariants.
-
-For a production deployment, event acknowledgment, retry handling, gap detection, and persistent gateway updates must be coordinated to avoid losing events during interrupted synchronization.
-
----
-
-## 5. System Architecture
+## 3. Architecture
 
 ```mermaid
 flowchart TD
-    A["Sensors: MQ2 / DHT22"] --> B["Edge Node: C++17"]
-    B --> C["Local Threshold Evaluation"]
-    C --> D["Local Alarm / Siren"]
-    B --> E["Priority Classification"]
-    E --> F["Critical Event Journal"]
-    E --> G["Latest-Value Telemetry Map"]
-    F --> H["Priority-Based Message Sender"]
-    G --> H
-    H --> I["Unreliable Network"]
-    I --> J["Gateway Receiver"]
-    J --> K["Frame Validation and Deduplication"]
-    K --> L["Version and Stale-Data Checks"]
-    L --> M["Persistent SQLite Ledger"]
-    M --> N["Dashboard / State Verification"]
-    O["Failure-Injection Simulator"] --> B
-    O --> I
-    O --> J
+    S["Sensors: MQ2 / DHT22"] --> N["Edge node: liblifeline (C++17)"]
+    N --> L["Local threshold check"]
+    L --> A["Local alarm and valve interlock"]
+    N --> P["Priority classes"]
+    P --> J["Critical / Control journal (flash)"]
+    P --> T["Latest-value telemetry registers (RAM)"]
+    J --> Q["Priority sender"]
+    T --> Q
+    Q --> NET["Unreliable link (MQTT transport)"]
+    NET --> G["Gateway (Python)"]
+    G --> D["SQLite ledger: event + state + watermark in one transaction"]
+    D -->|"ACK only after commit"| Q
+    G --> C["Command outbox (desired state, version)"]
+    C --> NET
+    X["Chaos simulator"] -.->|"injects faults"| N
+    X -.-> NET
+    X -.-> G
 ```
 
-### Main components
+**Delivery protocol**
 
-| Component | Responsibility |
-|---|---|
-| Edge node | Sensor evaluation, local response, and message creation |
-| Priority manager | Selects critical events before routine messages |
-| Journal | Stores critical records and supports recovery |
-| Telemetry map | Retains the latest pending value for each key |
-| Transport | Carries messages across an unreliable network |
-| Gateway receiver | Validates messages and tracks duplicates |
-| SQLite ledger | Persists received records and application state |
-| Dashboard | Displays the latest recorded system state |
-| Chaos engine | Injects failures to test recovery behavior |
-| Invariant checker | Reports violations of the defined correctness rules |
+1. After every (re)connect the node sends `HELLO`; the gateway answers `WELCOME` with its committed watermarks.
+2. The node resends everything above the watermark, critical first.
+3. The gateway commits, then sends `ACK(cumulative)`. The node drops records only after that ACK.
+4. If an ACK is lost, the node resynchronises and the watermark tells it what is already committed.
 
-The architecture describes the intended end-to-end system. Individual components should be labeled as implemented, tested, or planned according to the current repository.
-
----
-
-## 6. End-to-End Workflow
-
-### Step 1 — Normal operation
-
-Sensors produce measurements. The edge node evaluates configured thresholds, updates routine telemetry, and creates critical events when necessary.
-
-Routine telemetry is retained using the latest-value policy. Critical events follow the journal's persistence path.
-
-### Step 2 — Network disconnection
-
-The transport becomes unavailable.
-
-The edge node continues local monitoring and emergency signaling. Critical records are retained according to the journal's capacity and commit behavior, while routine measurements can replace older pending values.
-
-### Step 3 — Critical event occurs offline
-
-Suppose a gas reading crosses its configured threshold.
-
-1. The edge node detects the condition.
-2. The local alarm activates.
-3. A critical event is created.
-4. The event is recorded before it is considered safely committed.
-5. The event waits for transmission when the network becomes available.
-
-The local alarm does not need to wait for remote acknowledgment.
-
-### Step 4 — Network recovery
-
-When communication resumes, the sender prioritizes critical events.
-
-The gateway validates incoming frames, checks sequence metadata, rejects duplicates, and prevents stale measurements from replacing newer values.
-
-The gateway persists accepted records and state changes in its ledger.
-
-### Step 5 — Crash and restart recovery
-
-The journal recovery procedure identifies valid records and rejects invalid or incomplete records according to its recovery rules.
-
-The gateway reloads its persisted state from SQLite after a process restart.
-
-These mechanisms must be tested independently: node recovery does not automatically prove gateway recovery, and vice versa.
-
-### Step 6 — Verification
-
-The simulator runs repeatable failure scenarios and evaluates the resulting state.
-
-It checks for:
-
-- Missing accepted critical events.
-- Duplicate application effects.
-- Stale telemetry overwrites.
-- Violations of critical-message priority.
-- Incorrect recovery after injected failures.
-
-Each test run should record its seed, workload, failure schedule, and results.
-
----
-
-## 7. Message Priority
-
-LIFELINE uses three conceptual message classes.
-
-| Priority | Message type | Handling policy |
+| Frame | Direction | Purpose |
 |---|---|---|
-| P0 | Critical alarms | Highest transmission priority |
-| P1 | Control messages | Sent after critical events, according to the implementation's ordering rules |
-| P2 | Routine telemetry | Latest pending value per key can replace older values |
+| `Data` | node → gateway | One critical, control or telemetry record |
+| `Hello` / `Welcome` | node ⇄ gateway | Resynchronisation after reconnect |
+| `Ack` / `TeleAck` | gateway → node | Cumulative commit acknowledgment / newest applied telemetry version |
+| `Cmd` / `CmdAck` | gateway ⇄ actuator | Desired-state command / commit or stale rejection |
 
-This policy prevents a large backlog of routine measurements from automatically taking precedence over safety-related events.
+Every frame is `[type][body][CRC32]`; a corrupt frame is dropped and retried.
 
-Priority affects transmission order. It does not eliminate the need for adequate storage, retransmission, acknowledgments, and network recovery handling.
+**MQTT.** MQTT QoS 1 acknowledges one hop, from client to broker. LIFELINE waits for its own acknowledgment after the
+*application's* durable commit, and adds priority, versions and a durable device queue on top. It does not replace MQTT.
 
----
+## 4. Guarantees, assumptions and limits
 
-## 8. Crash Resilience and Data Integrity
+**Invariants checked by the simulator**
 
-### Append-only journal
-
-Critical events are written to a journal before transmission. CRC32 is used to detect accidental corruption.
-
-A robust journal implementation must define:
-
-- Record format and length validation.
-- Commit and acknowledgment semantics.
-- Recovery from incomplete writes.
-- Handling of invalid records.
-- Behavior when storage becomes full.
-- Safe recovery after interrupted compaction, if compaction is supported.
-
-### Duplicate protection
-
-Message sequence identifiers and persistent receiver state help prevent repeated messages from applying the same logical update multiple times.
-
-Deduplication state must be retained for an appropriate period and must be updated consistently with the associated application state.
-
-### Stale-data protection
-
-Measurements include a version or ordering value for their respective keys.
-
-The receiver accepts a measurement only when it is valid under the configured ordering rules. Older updates must not replace newer accepted state.
-
-### Gateway persistence
-
-A persistent ledger allows the gateway to restore accepted event history after a process restart.
-
-For reliable application behavior, deduplication records and their corresponding state updates should be committed together in a database transaction.
-
----
-
-## 9. Failure-Injection Testing
-
-LIFELINE uses a deterministic simulator to test how the messaging core responds to unreliable conditions.
-
-### Failure scenarios
-
-- Network partitions.
-- Packet loss.
-- Duplicate delivery.
-- Out-of-order delivery.
-- Corrupted records or frames.
-- Node crashes and restarts.
-- Repeated execution using recorded random seeds.
-
-### Invariants
-
-**I1 — Critical-event preservation**
-
-No accepted, committed critical event should be silently lost within the defined test model and its storage assumptions.
-
-**I2 — Duplicate-effect prevention**
-
-Replaying the same logical command must not cause a second application effect within the defined deduplication scope.
-
-**I3 — Stale-update prevention**
-
-An older measurement must not overwrite a newer accepted value for the same key.
-
-**I4 — Priority correctness**
-
-When critical events and lower-priority messages are pending, the sender must follow the defined critical-first scheduling policy.
-
-The test report should include the number of runs, number of injected failures, invariant violations, and any assumptions that limit the results.
-
----
-
-## 10. Empirical Evaluation
-
-The following are the reported results from the project's simulator evaluation. They should be reproduced from the current code and recorded test output before being treated as final submission evidence.
-
-| Metric | Modeled MQTT QoS 1 baseline | LIFELINE |
-|---|---:|---:|
-| Lost critical events | 1,161 | 0 reported violations |
-| Duplicate application effects | 7,088 | 0 reported violations |
-| Stale telemetry overwrites | 8,381 | 0 reported violations |
-
-**Interpretation:** In the reported simulation, LIFELINE had zero violations of the three listed invariants, while the modeled baseline had violations.
-
-These results do not establish that every real MQTT QoS 1 deployment will behave this way. MQTT QoS 1 permits duplicate delivery, and persistent sessions alone do not guarantee durable application storage, exactly-once physical actuation, or protection against stale application updates.
-
-For a fair comparison, document the baseline configuration, storage assumptions, workload, and identical failure schedules. Distinguish simulator measurements from real-broker and hardware measurements.
-
-Recommended additional metrics include:
-
-- Critical-event delivery latency after reconnection.
-- Recovery time after a node or gateway restart.
-- Maximum journal capacity and storage overhead.
-- Memory use as the number of telemetry keys increases.
-- Number of injected crash points and recovery failures.
-
----
-
-## 11. Technology Stack
-
-| Layer | Technology |
+| ID | Invariant |
 |---|---|
-| Core messaging engine | C++17 |
-| Gateway | Python |
-| Persistent gateway ledger | SQLite |
-| Messaging transport | MQTT / Mosquitto integration |
-| Failure testing | Deterministic simulator |
-| Validation | Automated tests and invariant checks |
-| Hardware demonstration | ESP32, if the target driver and hardware integration are implemented and tested |
+| I1 | A durably accepted critical record is never silently lost: it is committed at the gateway or still recoverable at the node |
+| I2 | Repeated delivery of one event identifier does not apply its effect twice |
+| I3 | A lower version never replaces a higher committed version for the same key or command stream |
+| I4 | When the sender picks its next record, pending critical traffic is chosen before routine telemetry |
 
-The C++ core can be developed and tested independently of the physical device. This makes it possible to reproduce failures without relying exclusively on manual cable disconnections or power cycling.
+Resources are bounded: when the journal is full the enqueue call returns an explicit failure, the local alarm still
+works, and records that were already accepted are never discarded.
 
----
+**Assumptions.** Committed storage stays intact, node identities and sequence numbers are not reset (a replaced device
+must be re-enrolled), connectivity eventually returns, each sensor key has one writer, the gateway is the only command
+authority for an actuator, and messages are not forged.
 
-## 12. Build and Run
+**Not attempted.** Multi-hop mesh routing, general multi-writer merging, malicious-node tolerance, authentication,
+exactly-once *physical* actuator movement, unlimited retention during unlimited outages, validated flash-endurance
+behaviour. This is a software demonstration, **not a certified safety system.**
 
-### Prerequisites
+## 5. Status
 
-- A C++ compiler supporting C++17.
-- A terminal or command prompt.
-- The source repository and its required project files.
+| Component | Status | How it is verified |
+|---|---|---|
+| C++17 core: journal, sequences, priority, bounded queues, version checks, actuator | Implemented | Unit tests in `tests/`, including crash-at-every-byte and randomized crash runs |
+| Deterministic chaos simulator (`sim/`) | Implemented | `./lifeline_sim --seeds 200` |
+| Python + SQLite gateway (`gateway/`) | Implemented as a library | Cross-checked against the C++ node and actuator over the real frame format |
+| ESP32 sketch on LittleFS (`wokwi/`) | Implemented | Logic checked on a PC with `host_test/`; **simulation only** |
+| MQTT / Mosquitto adapter | Planned | Not in this revision |
+| Crash-safe journal compaction | Planned | The journal is fixed-capacity |
+| Real ESP32 hardware and real-flash power-loss tests | Not done | |
 
-### Compile the core simulator
+## 6. Quick start
 
-From the repository root:
+Requirements: a C++17 compiler and Python 3.8+. There are no other dependencies.
+
+**Unit tests**
+
+```bash
+mkdir -p build
+g++ -std=c++17 -O1 -Iinclude -Ithird_party -Itests \
+    src/codec.cpp src/journal.cpp src/node.cpp src/messages.cpp src/actuator.cpp tests/*.cpp -o build/tests
+./build/tests
+```
+
+**Chaos simulator**
 
 ```bash
 g++ -std=c++17 -O2 -Iinclude -I. src/*.cpp sim/*.cpp -o lifeline_sim
+./lifeline_sim --seeds 200          # Windows: .\lifeline_sim.exe --seeds 200
 ```
 
-### Run the simulator
+Keep the complete output, including any failing seeds, in `results/`.
 
-```bash
-./lifeline_sim --seeds 200
+**Gateway**
+
+```python
+from gateway.gateway import Gateway, open_db
+
+gw = Gateway(open_db("lifeline.db"))      # WAL mode, synchronous=FULL
+replies = gw.on_frame(frame_bytes)        # -> [(node_id, reply_frame), ...]
+cmd = gw.issue_command(actuator=3, desired=1)   # persisted before it is ever sent
 ```
 
-On Windows, run the generated executable as:
+A gateway restart is simply a new `Gateway` on the same database file.
 
-```powershell
-.\lifeline_sim.exe --seeds 200
+## 7. ESP32 demo in Wokwi (simulation)
+
+`wokwi/` holds an ESP32 sketch (MQ2 gas sensor, DHT22, SSD1306 OLED, buzzer, valve LED) that runs the **real core**
+with its journal stored in LittleFS. Setup and the full command list are in [`wokwi/README_WOKWI.md`](wokwi/README_WOKWI.md).
+
+| Key | Shows |
+|---|---|
+| `g` | Gas event: local alarm first, then `ACCEPTED seq=N` after the durable write |
+| `d` / `u` | Link down / up: HELLO/WELCOME, then critical records flush before telemetry |
+| `r` | Reboot: pending records survive and sequence numbers continue |
+| `x` | Modeled power loss mid-write: not accepted, torn bytes cut on boot, no sequence reuse |
+| `p` / `s` / `k` | Replayed duplicate, stale telemetry and old command are all rejected |
+| `l` | Lost ACK: no duplicate effect |
+
+![Wokwi simulation](docs/wokwi-1.jpeg)
+![Wokwi simulation, second view](docs/wokwi-2.jpeg)
+
+**What this demo is, exactly:** a Wokwi simulation of the LIFELINE core on an ESP32 with LittleFS. The power loss is a
+fault injected in software, and the gateway inside the sketch is a stand-in. The full protocol is verified separately
+by the unit tests and the simulator. It is not a test on physical hardware.
+
+## 8. Results (reported)
+
+Reported by the project's simulator over 200 seeds, under identical multi-fault timelines:
+
+| Metric | Modeled MQTT QoS 1 baseline | LIFELINE |
+|---|---:|---:|
+| Lost critical events (I1) | 1,161 | 0 violations |
+| Duplicate application effects (I2) | 7,088 | 0 violations |
+| Stale telemetry overwrites (I3) | 8,381 | 0 violations |
+
+Read these figures carefully:
+
+- They come from a **simulated, modeled baseline** (MQTT QoS 1, stable client id, persistent session, RAM-only
+  application queue). They do not show that every real MQTT deployment behaves this way.
+- "0 violations" holds only for the faults the simulator injects, within the assumptions in section 4.
+- Reproduce them from the current commit and store the output in `results/` with: commit hash, seed range,
+  configuration, per-run violation counts, any failing seeds, and how many runs completed within their deadline.
+- Simulator numbers, real-broker numbers and hardware numbers must be reported separately.
+
+## 9. What each kind of evidence supports
+
+| Evidence | Supports |
+|---|---|
+| Unit tests | Specific mechanisms and boundary cases |
+| Chaos simulator | Recovery behaviour under the modeled faults |
+| `host_test/` on the Wokwi sketch | The sketch logic, not Wokwi or the ESP32 toolchain |
+| Wokwi demo | Firmware integration and local reaction, in simulation |
+| Real broker and hardware tests (future) | Real MQTT behaviour, real flash, power and radio |
+
+## 10. Repository layout
+
+```
+include/lifeline/   public interfaces: protocol, journal, node, messages, dedup, actuator
+src/                core implementation
+sim/                deterministic chaos simulator
+tests/              unit tests (doctest in third_party/)
+gateway/            Python + SQLite gateway and frame codec (wire.py)
+wokwi/              ESP32 sketch, flat copy of the core, LittleFS adapter, diagram.json
+host_test/          runs the sketch logic on a PC against stand-ins for Arduino and LittleFS
+docs/               screenshots
+results/            saved simulator output
 ```
 
-Use the exact commands and test targets documented by the current repository. If a source file or simulator option differs in a particular revision, adjust the command accordingly.
+## 11. Limitations and future work
 
-### Run the automated tests
+- The journal has fixed capacity and does not reclaim space yet. Crash-safe compaction is the main storage task.
+- Durability depends on the target flash driver. The simulator's storage model does not validate a particular ESP32 filesystem.
+- A failed flush is reported as `IoError`. The journal removes any bytes that survived, so a sequence number is never reused.
+- Telemetry is a latest-value snapshot, not a lossless history.
+- No authentication or encryption; use isolated demonstration data only.
+- Next: MQTT adapter with a real broker, ESP32 flash driver tests, hardware power-cut tests, and larger fleets.
 
-Follow the repository's documented test commands. Save the complete output, including failures, rather than recording only the final success count.
+## 12. References
 
-### MQTT gateway
-
-If the Python gateway and Mosquitto integration are present in the checked-out revision, follow their dedicated setup instructions. A simulator-only build does not itself verify the end-to-end MQTT transport.
-
----
-
-## 13. Project Structure
-
-The core repository is organized around these conceptual areas:
-
-```text
-lifeline/
-├── include/
-│   └── lifeline/       # Public interfaces and data structures
-├── src/                # Core messaging and persistence logic
-├── sim/                # Deterministic failure simulator
-├── tests/              # Automated validation
-├── gateway/            # Python receiver and persistence (if included)
-├── deploy/              # Broker and deployment configuration (if included)
-└── README.md
-```
-
-The exact files and directories depend on the repository revision. Optional integration folders should not be shown as completed components unless they are actually present.
+- Official InnoHacks 2.0 problem statements, IoT Problem 5.
+- OASIS MQTT v5.0 specification: <https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html>
+- SQLite atomic commit: <https://www.sqlite.org/atomiccommit.html>
+- SQLite write-ahead logging: <https://www.sqlite.org/wal.html>
+- SQLite pragmas (`synchronous`): <https://www.sqlite.org/pragma.html>
 
 ---
-
-## 14. Limitations and Future Work
-
-LIFELINE is intended to demonstrate fault-tolerant messaging principles, not to claim complete production readiness.
-
-Current and potential limitations include:
-
-- Fixed journal capacity and storage-exhaustion handling.
-- Durability guarantees that depend on the target storage driver.
-- Gateway transaction and crash-recovery behavior.
-- Transport integration and reconnect testing.
-- Persistent sequence and deduplication state management.
-- ESP32 flash integration and physical sensor testing.
-- MQTT authentication, access control, and secure transport.
-- Testing at larger fleet sizes and under longer outages.
-
-Future work includes crash-safe journal compaction, a complete edge-to-gateway MQTT integration, ESP32 flash drivers, real hardware fault injection, stronger recovery reporting, and security hardening.
-
----
-
-## 15. Applications
-
-Potential application areas include:
-
-- Rural environmental monitoring.
-- Gas-leak and industrial safety monitoring.
-- Healthcare and facility monitoring.
-- Agricultural sensing.
-- Disaster-response sensor networks.
-- Remote infrastructure monitoring.
-
-Each application requires its own safety analysis, appropriate sensor calibration, and validation of local alarm behavior.
-
----
-
-## 16. Conclusion
-
-LIFELINE explores a priority-first, crash-resilient approach to messaging for disconnected IoT environments.
-
-By combining local decision-making, bounded routine telemetry, durable critical-event recording, duplicate protection, stale-update checks, and deterministic failure testing, the project aims to keep system state trustworthy even when communication becomes unreliable.
-
-Its central principle is simple:
 
 **Safety should not wait for the network. Critical events should be preserved, delivered first, and verified after recovery.**
-
----
-
-## Team Matrix
-
-- **B. Gangadhar** — Core Engine
-- **K. Dinesh Kumar** — Gateway
-- **R. Veera Poojitha** — Chaos Engine
-
-**Event:** InnoHacks 2.0 · TechSpark 2026  
-**Track:** IoT · Problem 5
