@@ -78,7 +78,7 @@ bool Journal::heal() {
   return true;
 }
 
-Journal::Result Journal::append_frame(const std::vector<uint8_t>& body, bool may_use_reserve) {
+Journal::Result Journal::append_frame(const std::vector<uint8_t>& body, int tier) {
   if (poisoned_ && !heal()) return Result::IoError;
   std::vector<uint8_t> frame;
   put_u32(frame, static_cast<uint32_t>(body.size()));
@@ -86,7 +86,8 @@ Journal::Result Journal::append_frame(const std::vector<uint8_t>& body, bool may
   put_u32(frame, crc32(frame.data(), frame.size()));
 
   size_t cap = f_.capacity();
-  size_t limit = may_use_reserve ? cap : (cap > reserve_ ? cap - reserve_ : 0);
+  size_t hold = tier >= 2 ? 0 : kMetaReserve + (tier == 1 ? 0 : reserve_);
+  size_t limit = cap > hold ? cap - hold : 0;
   size_t before = f_.size();
   if (before + frame.size() > limit) return Result::Full;
 
@@ -103,7 +104,7 @@ Journal::Result Journal::append_data(const Record& r) {
   std::vector<uint8_t> body;
   put_u8(body, 1);
   encode_body(r, body);
-  return append_frame(body, r.cls == Cls::Critical);
+  return append_frame(body, r.cls == Cls::Critical ? 1 : 0);
 }
 
 Journal::Result Journal::append_ack(Cls c, uint64_t upto) {
@@ -111,14 +112,14 @@ Journal::Result Journal::append_ack(Cls c, uint64_t upto) {
   put_u8(body, 2);
   put_u8(body, static_cast<uint8_t>(c));
   put_u64(body, upto);
-  return append_frame(body, true);
+  return append_frame(body, 1);  // optional: a missing ack record only causes a harmless resend, so it never eats the epoch reserve
 }
 
 Journal::Result Journal::append_epoch(uint32_t epoch) {
   std::vector<uint8_t> body;
   put_u8(body, 3);
   put_u32(body, epoch);
-  return append_frame(body, true);
+  return append_frame(body, 2);
 }
 
 }  // namespace lifeline

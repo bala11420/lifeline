@@ -26,7 +26,7 @@ class CmdOutbox {
   uint64_t issue(uint32_t node, uint16_t actuator, uint8_t desired) {
     Slot& s = nodes_[node];
     Pending p;
-    p.cmd.node = node; p.cmd.term = 1; p.cmd.seq = s.next++; p.cmd.actuator = actuator; p.cmd.desired = desired;
+    p.cmd.node = node; p.cmd.term = 1; p.cmd.seq = s.next++; p.cmd.desired = desired;
     s.pending[p.cmd.seq] = p;
     return p.cmd.seq;
   }
@@ -52,7 +52,7 @@ class CmdOutbox {
   void ack_exact(uint32_t node, uint64_t seq) { nodes_[node].pending.erase(seq); }
 
  private:
-  struct Pending { Command cmd; int64_t last_sent = -1; };
+  struct Pending { Cmd cmd; int64_t last_sent = -1; };
   struct Slot { uint64_t next = 1; std::map<uint64_t, Pending> pending; };
   std::map<uint32_t, Slot> nodes_;
 };
@@ -68,7 +68,7 @@ class LifelineNode : public NodeEngine {
   void boot() override {
     node_.reset(new Node(flash_, clock_, cfg_));
     node_->boot();
-    act_.reset(new Actuator(act_flash_, 1));
+    act_.reset(new Actuator(act_flash_));
     act_->boot();  // reconciles the output to the persisted desired state
     acks_.clear();
   }
@@ -111,21 +111,21 @@ class LifelineNode : public NodeEngine {
   void on_frame(const uint8_t* p, size_t n) override {
     MsgType t;
     if (!msg_type(p, n, t)) return;
-    if (t == MsgType::Command) {
-      Command c;
+    if (t == MsgType::Cmd) {
+      Cmd c;
       if (!decode_msg(p, n, c)) return;
-      uint8_t before = act_->output();
-      Actuator::Result r = act_->on_command(c);
-      if (r == Actuator::Result::Applied || act_->output() != before) {  // observe the output pin itself
+      uint8_t before = static_cast<uint8_t>(act_->output());
+      CmdResult r = act_->on_command(c);
+      if (r == CmdResult::Applied || static_cast<uint8_t>(act_->output()) != before) {  // observe the output pin itself
         CmdEffect e; e.t = sim_.now(); e.term = c.term; e.seq = c.seq; e.desired = c.desired;
-        e.durable = (r == Actuator::Result::Applied);
+        e.durable = (r == CmdResult::Applied);
         effects_.push_back(e);
       }
-      if (r == Actuator::Result::IoError) {
+      if (r == CmdResult::IoError) {
         CmdEffect d; d.t = sim_.now(); d.term = c.term; d.seq = c.seq; d.desired = c.desired; d.durable = false;
         doubt_.push_back(d);
       }
-      if (r != Actuator::Result::IoError) {  // applied, duplicate or stale: report what we hold
+      if (r != CmdResult::IoError) {  // applied, duplicate or stale: report what we hold
         CmdAck a; a.node = cfg_.node_id; a.term = act_->term(); a.seq = act_->seq();
         std::vector<uint8_t> f;
         encode_msg(a, f);
@@ -142,14 +142,14 @@ class LifelineNode : public NodeEngine {
   size_t unacked() const override { return node_->unacked(Cls::Critical) + node_->unacked(Cls::Control); }
   std::vector<uint32_t> pending_critical_ids() const override {
     std::vector<uint32_t> v;
-    const std::deque<Record>& d = node_->pending_records(Cls::Critical);
+    const std::vector<Record> d = node_->pending_records(Cls::Critical);
     for (size_t i = 0; i < d.size(); i++) v.push_back(get_u32(d[i].payload));
     return v;
   }
   void retry() override { node_->retry_telemetry(); }
   size_t storage_used() const override { return node_->journal_used(); }
   const std::vector<CmdEffect>& effects() const override { return effects_; }
-  uint8_t actuator_output() const override { return act_->output(); }
+  uint8_t actuator_output() const override { return static_cast<uint8_t>(act_->output()); }
   const std::vector<CmdEffect>& in_doubt() const override { return doubt_; }
 
  private:
@@ -271,8 +271,8 @@ class NaiveNode : public NodeEngine {
   void on_frame(const uint8_t* p, size_t n) override {
     MsgType t;
     if (!msg_type(p, n, t)) return;
-    if (t == MsgType::Command) {  // applies every command it receives, in arrival order, remembers nothing
-      Command c;
+    if (t == MsgType::Cmd) {  // applies every command it receives, in arrival order, remembers nothing
+      Cmd c;
       if (!decode_msg(p, n, c)) return;
       CmdEffect e; e.t = sim_.now(); e.term = c.term; e.seq = c.seq; e.desired = c.desired;
       effects_.push_back(e);

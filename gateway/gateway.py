@@ -8,7 +8,8 @@ import sqlite3
 from . import wire
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS nodes(node INTEGER PRIMARY KEY, max_epoch INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS nodes(node INTEGER PRIMARY KEY, max_epoch INTEGER NOT NULL, refused INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS events_archive(node INTEGER, cls INTEGER, seq INTEGER, epoch INTEGER, key INTEGER, payload BLOB);
 CREATE TABLE IF NOT EXISTS events(node INTEGER, cls INTEGER, seq INTEGER, epoch INTEGER, key INTEGER,
                                   payload BLOB, PRIMARY KEY(node, cls, seq));
 CREATE TABLE IF NOT EXISTS watermark(node INTEGER, cls INTEGER, upto INTEGER NOT NULL, PRIMARY KEY(node, cls));
@@ -30,6 +31,10 @@ def open_db(path=":memory:", durable=True):
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")
     db.executescript(SCHEMA)
+    try:  # databases created before epoch enforcement lack the column
+        db.execute("ALTER TABLE nodes ADD COLUMN refused INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     return db
 
 
@@ -40,6 +45,7 @@ class Gateway:
         if row is None:
             db.execute("INSERT INTO meta VALUES('term', ?)", (term,))
         self.refused_epochs = 0
+        self.refused_frames = 0
 
     # ---------------------------------------------------------------- helpers
     def _term(self):
@@ -56,6 +62,26 @@ class Gateway:
         self.db.execute("INSERT INTO watermark VALUES(?,?,?) ON CONFLICT(node,cls) DO UPDATE SET upto=?",
                         (node, cls, w, w))
         return w
+
+    def _is_refused(self, node):
+        r = self.db.execute("SELECT refused FROM nodes WHERE node=?", (node,)).fetchone()
+        return bool(r and r[0])
+
+    def _refuse(self, node):
+        """Answer a refused node with Welcome(epoch_ok=False) instead of an Ack: the node keeps its records
+        (they are never confirmed) and learns why. Nothing is applied."""
+        self.refused_frames += 1
+        return [(node, wire.encode(wire.Welcome(node, self._hwm(node, wire.CRIT), self._hwm(node, wire.CTRL), False)))]
+
+    def reenroll(self, node):
+        """Operator action for a replaced or re-flashed device. Archives its old events, clears its watermarks,
+        telemetry state and epoch, so the new device starts at seq 1 without colliding with committed history."""
+        self.db.execute("BEGIN IMMEDIATE")
+        self.db.execute("INSERT INTO events_archive SELECT node, cls, seq, epoch, key, payload FROM events WHERE node=?",
+                        (node,))
+        for t in ("events", "watermark", "state", "nodes"):
+            self.db.execute("DELETE FROM %s WHERE node=?" % t, (node,))
+        self.db.execute("COMMIT")
 
     def _bump(self, name):
         self.db.execute("INSERT INTO app VALUES(?,1) ON CONFLICT(name) DO UPDATE SET value=value+1", (name,))
@@ -106,9 +132,13 @@ class Gateway:
         r = self.db.execute("SELECT max_epoch FROM nodes WHERE node=?", (h.node,)).fetchone()
         ok = r is None or h.epoch >= r[0]
         if ok:
-            self.db.execute("INSERT INTO nodes VALUES(?,?) ON CONFLICT(node) DO UPDATE SET max_epoch=?",
-                            (h.node, h.epoch, h.epoch))
+            self.db.execute("INSERT INTO nodes(node, max_epoch, refused) VALUES(?,?,0) "
+                            "ON CONFLICT(node) DO UPDATE SET max_epoch=?, refused=0", (h.node, h.epoch, h.epoch))
         else:
+            # An epoch that went backwards means the node lost its journal (wiped or replaced flash), so its
+            # sequence numbers restarted and would collide with committed ones. Remember the refusal, so the
+            # data frames that follow are NOT applied and NOT acknowledged (see _is_refused).
+            self.db.execute("UPDATE nodes SET refused=1 WHERE node=?", (h.node,))
             self.refused_epochs += 1
         crit, ctrl = self._hwm(h.node, wire.CRIT), self._hwm(h.node, wire.CTRL)
         self.db.execute("COMMIT")
@@ -118,6 +148,8 @@ class Gateway:
         return (node, wire.encode(wire.Welcome(node, self._hwm(node, wire.CRIT), self._hwm(node, wire.CTRL), True)))
 
     def _data(self, r):
+        if self._is_refused(r.node):
+            return self._refuse(r.node)
         if r.cls == wire.TELE:
             return self._telemetry(r)
         self.db.execute("BEGIN IMMEDIATE")
@@ -169,4 +201,5 @@ class Gateway:
                          q("SELECT actuator, term, seq, desired, done, status FROM commands ORDER BY seq")],
             "events": q("SELECT COUNT(*) FROM events")[0][0],
             "refused_epochs": self.refused_epochs,
+            "refused_frames": self.refused_frames,
         }

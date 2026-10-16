@@ -21,6 +21,10 @@ class Journal {
   enum class Result { Ok, Full, IoError };
 
   // `critical_reserve` bytes at the end of the capacity can only be used by Critical records.
+  // The last kMetaReserve bytes are held back from ALL data records so a reboot can always persist its
+  // new boot epoch. If the epoch could not be stored, the next boot would reuse it, telemetry versions
+  // would restart under the same epoch and the gateway would reject the node's fresh readings as stale.
+  static constexpr size_t kMetaReserve = 64;
   Journal(Flash& f, size_t critical_reserve) : f_(f), reserve_(critical_reserve) {}
 
   // Scans the log, truncates a torn or corrupt tail, and returns every valid entry in order.
@@ -42,7 +46,8 @@ class Journal {
   bool poisoned() const { return poisoned_; }
 
  private:
-  Result append_frame(const std::vector<uint8_t>& body, bool may_use_reserve);
+  // tier 0 = routine data, 1 = Critical data (may use critical_reserve), 2 = Ack/Epoch metadata (may use everything).
+  Result append_frame(const std::vector<uint8_t>& body, int tier);
   Flash& f_;
   size_t reserve_;
   size_t discarded_ = 0;

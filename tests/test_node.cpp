@@ -199,7 +199,7 @@ TEST_CASE("ack records burn journal space; batching stretches it; the limit is s
   for (int batch : {1, 8}) {
     NodeConfig c = cfg();
     c.ack_batch = static_cast<size_t>(batch);
-    MemFlash f(600);  // the probe: 11 criticals acked one at a time
+    MemFlash f(600 + Journal::kMetaReserve);  // the probe: 11 criticals acked one at a time (+ the epoch reserve)
     FakeClock clk;
     Node n(f, clk, c);
     REQUIRE(n.boot());
@@ -354,4 +354,17 @@ TEST_CASE("pending_records exposes exactly the unacknowledged durable records") 
   REQUIRE(p.size() == 2);
   CHECK(p[0].seq == 2);
   CHECK(n.pending_records(Cls::Telemetry).empty());
+}
+
+TEST_CASE("a full journal can still persist the next boot epoch, so telemetry versions never restart under an old epoch") {
+  MemFlash f(400);
+  FakeClock clk;
+  uint32_t last_epoch = 0;
+  for (int boot = 0; boot < 4; boot++) {
+    Node n(f, clk, cfg());
+    REQUIRE(n.boot());                       // the epoch frame must always fit
+    CHECK(n.epoch() > last_epoch);           // strictly increasing across reboots
+    last_epoch = n.epoch();
+    while (n.submit(Cls::Critical, 1, "fill", 4) == SubmitResult::Accepted) {}  // fill it to the brim
+  }
 }
