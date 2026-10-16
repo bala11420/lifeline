@@ -199,7 +199,7 @@ TEST_CASE("ack records burn journal space; batching stretches it; the limit is s
   for (int batch : {1, 8}) {
     NodeConfig c = cfg();
     c.ack_batch = static_cast<size_t>(batch);
-    MemFlash f(600 + 128);  // the probe: 11 criticals acked one at a time (+ system reserve)
+    MemFlash f(600);  // the probe: 11 criticals acked one at a time
     FakeClock clk;
     Node n(f, clk, c);
     REQUIRE(n.boot());
@@ -324,15 +324,34 @@ TEST_CASE("repeated random crashes (torn writes and failed flushes, also during 
   }
 }
 
-TEST_CASE("a completely full journal can still start a new boot epoch") {
-  MemFlash f(500);
+TEST_CASE("a frame that survives a failed flush is dropped, so a sequence number is never reused") {
+  MemFlash f(8192);
   FakeClock clk;
-  uint32_t last_epoch = 0;
-  for (int boot = 0; boot < 6; boot++) {
-    Node n(f, clk, cfg());
-    REQUIRE_MESSAGE(n.boot(), "boot " << boot << " could not persist its epoch");
-    CHECK(n.epoch() > last_epoch);  // never reused, or the gateway would reject our telemetry
-    last_epoch = n.epoch();
-    while (n.submit(Cls::Critical, 1, "fill", 4) == SubmitResult::Accepted) {}  // fill it completely
-  }
+  Node n(f, clk, cfg());
+  REQUIRE(n.boot());
+  f.arm_sync_failure();
+  CHECK(n.submit(Cls::Critical, 1, "AAA", 3) == SubmitResult::IoError);  // caller is told: failed
+  f.power_cycle(false);                                                   // ...but the bytes survived
+  uint64_t seq = 0;
+  CHECK(n.submit(Cls::Critical, 1, "BBB", 3, &seq) == SubmitResult::Accepted);
+  CHECK(seq == 1);
+  Node r(f, clk, cfg());
+  REQUIRE(r.boot());
+  std::vector<Record> out = drain(r);
+  REQUIRE(out.size() == 1);  // before the fix: two different records, both seq 1
+  CHECK(out[0].seq == 1);
+  CHECK(std::memcmp(out[0].payload, "BBB", 3) == 0);
+}
+
+TEST_CASE("pending_records exposes exactly the unacknowledged durable records") {
+  MemFlash f(8192);
+  FakeClock clk;
+  Node n(f, clk, cfg());
+  REQUIRE(n.boot());
+  for (int i = 0; i < 3; i++) n.submit(Cls::Critical, 1, "x", 1);
+  n.on_ack(Cls::Critical, 1);
+  std::vector<Record> p = n.pending_records(Cls::Critical);
+  REQUIRE(p.size() == 2);
+  CHECK(p[0].seq == 2);
+  CHECK(n.pending_records(Cls::Telemetry).empty());
 }

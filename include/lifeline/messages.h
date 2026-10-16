@@ -6,7 +6,7 @@
 
 namespace lifeline {
 
-enum class MsgType : uint8_t { Data = 1, Hello = 2, Welcome = 3, Ack = 4, TeleAck = 5, Command = 6, CmdAck = 7 };
+enum class MsgType : uint8_t { Data = 1, Hello = 2, Welcome = 3, Ack = 4, TeleAck = 5, Cmd = 6, CmdAck = 7 };
 
 // node -> gateway, first message after every (re)connect.
 struct Hello { uint32_t node = 0; uint32_t epoch = 0; uint64_t crit_next_seq = 1; uint64_t ctrl_next_seq = 1; };
@@ -18,19 +18,18 @@ struct Ack { uint32_t node = 0; Cls cls = Cls::Critical; uint64_t upto = 0; };
 // gateway -> node, newest telemetry version applied for a key.
 struct TeleAck { uint32_t node = 0; uint32_t epoch = 0; uint16_t key = 0; uint64_t version = 0; };
 
-// gateway -> actuator node. ABSOLUTE desired state (never a toggle), ordered by (term, seq).
-struct Command { uint32_t node = 0; uint32_t term = 1; uint64_t seq = 0; uint16_t actuator = 1; uint8_t desired = 0; };
-// actuator node -> gateway: the highest (term, seq) the actuator has applied. Sent for applied AND for
-// stale or duplicate commands, so the gateway stops retrying anything at or below it.
-struct CmdAck { uint32_t node = 0; uint32_t term = 0; uint64_t seq = 0; };
+// gateway -> actuator node: an absolute desired state (never a toggle) under (term, seq).
+struct Cmd { uint32_t node = 0; uint32_t term = 1; uint64_t seq = 0; uint8_t desired = 0; };
+// actuator node -> gateway: status 0 = committed (applied or duplicate), 1 = refused as stale.
+struct CmdAck { uint32_t node = 0; uint32_t term = 0; uint64_t seq = 0; uint8_t status = 0; };
 
 void encode_msg(const Record& m, std::vector<uint8_t>& out);   // MsgType::Data
-void encode_msg(const Command& m, std::vector<uint8_t>& out);
-void encode_msg(const CmdAck& m, std::vector<uint8_t>& out);
 void encode_msg(const Hello& m, std::vector<uint8_t>& out);
 void encode_msg(const Welcome& m, std::vector<uint8_t>& out);
 void encode_msg(const Ack& m, std::vector<uint8_t>& out);
 void encode_msg(const TeleAck& m, std::vector<uint8_t>& out);
+void encode_msg(const Cmd& m, std::vector<uint8_t>& out);
+void encode_msg(const CmdAck& m, std::vector<uint8_t>& out);
 
 // Validates length and CRC and reports the type. Call this first, then the matching decode_msg.
 bool msg_type(const uint8_t* p, size_t n, MsgType& t);
@@ -39,7 +38,7 @@ bool decode_msg(const uint8_t* p, size_t n, Hello& m);
 bool decode_msg(const uint8_t* p, size_t n, Welcome& m);
 bool decode_msg(const uint8_t* p, size_t n, Ack& m);
 bool decode_msg(const uint8_t* p, size_t n, TeleAck& m);
-bool decode_msg(const uint8_t* p, size_t n, Command& m);
+bool decode_msg(const uint8_t* p, size_t n, Cmd& m);
 bool decode_msg(const uint8_t* p, size_t n, CmdAck& m);
 
 }  // namespace lifeline

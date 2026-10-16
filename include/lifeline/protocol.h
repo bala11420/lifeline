@@ -14,10 +14,6 @@ enum class Cls : uint8_t { Critical = 0, Control = 1, Telemetry = 2 };
 
 constexpr size_t kMaxPayload = 64;
 
-// In-memory form only (not packed, not written directly). The stored/wire encoding is defined by
-// encode_body()/decode_body() in codec.cpp: explicit little-endian fields, kBodyFixed + len bytes.
-// A Record keeps its original (node, epoch, cls, seq) identity when recovered from the journal; a
-// reboot never gives a recovered event a new identity.
 struct Record {
   uint32_t node = 0;
   uint32_t epoch = 0;   // boot epoch of the node that created the record
@@ -43,10 +39,8 @@ struct Flash {
   virtual size_t read(size_t off, void* buf, size_t n) const = 0;
   virtual bool append(const void* buf, size_t n) = 0;  // false on failure or if it would not fit
   virtual void truncate(size_t n) = 0;
-  // Durability contract: data appended before a successful sync() is expected to survive power
-  // loss. An append is only "durably accepted" once sync() has returned true. Returning false
-  // means the flush FAILED and nothing since the last good sync is guaranteed durable. Errors must
-  // be returned to the caller, never ignored.
+  // Data appended before a successful sync() must survive power loss. Returning false means the
+  // flush FAILED and nothing since the last good sync is guaranteed durable.
   virtual bool sync() = 0;
 };
 

@@ -52,16 +52,7 @@ TEST_CASE("every message type round-trips and detects any single-bit corruption 
   TeleAck t2; REQUIRE(decode_msg(buf.data(), buf.size(), t2));
   CHECK((t2.key == 9 && t2.version == 1234567 && t2.epoch == 3));
 
-  Command c; c.node = 7; c.term = 2; c.seq = 41; c.actuator = 3; c.desired = 1;
-  CmdAck ca; ca.node = 7; ca.term = 2; ca.seq = 41;
-  buf.clear(); encode_msg(c, buf);
-  Command c2; REQUIRE(decode_msg(buf.data(), buf.size(), c2));
-  CHECK((c2.term == 2 && c2.seq == 41 && c2.actuator == 3 && c2.desired == 1));
-  buf.clear(); encode_msg(ca, buf);
-  CmdAck ca2; REQUIRE(decode_msg(buf.data(), buf.size(), ca2));
-  CHECK((ca2.term == 2 && ca2.seq == 41));
   check_corruption(r); check_corruption(h); check_corruption(w); check_corruption(a); check_corruption(t);
-  check_corruption(c); check_corruption(ca);
 }
 
 TEST_CASE("msg_type identifies frames and a decoder rejects the wrong type") {
@@ -75,4 +66,20 @@ TEST_CASE("msg_type identifies frames and a decoder rejects the wrong type") {
   CHECK_FALSE(decode_msg(buf.data(), buf.size(), a));
   uint8_t junk[3] = {1, 2, 3};
   CHECK_FALSE(msg_type(junk, 3, ty));
+}
+
+TEST_CASE("command messages round-trip and detect corruption") {
+  Cmd c; c.node = 3; c.term = 2; c.seq = 77; c.desired = 1;
+  CmdAck a; a.node = 3; a.term = 2; a.seq = 77; a.status = 1;
+  std::vector<uint8_t> b;
+  encode_msg(c, b);
+  Cmd c2; REQUIRE(decode_msg(b.data(), b.size(), c2));
+  CHECK((c2.node == 3 && c2.term == 2 && c2.seq == 77 && c2.desired == 1));
+  check_corruption(c);
+  b.clear(); encode_msg(a, b);
+  CmdAck a2; REQUIRE(decode_msg(b.data(), b.size(), a2));
+  CHECK((a2.seq == 77 && a2.status == 1));
+  check_corruption(a);
+  MsgType ty; REQUIRE(msg_type(b.data(), b.size(), ty));
+  CHECK(ty == MsgType::CmdAck);
 }

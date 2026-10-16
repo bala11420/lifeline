@@ -44,15 +44,14 @@ void encode_msg(const TeleAck& m, std::vector<uint8_t>& o) {
   put_u32(o, m.node); put_u32(o, m.epoch); put_u16(o, m.key); put_u64(o, m.version);
   seal(o, s);
 }
-
-void encode_msg(const Command& m, std::vector<uint8_t>& o) {
-  size_t s; begin(o, MsgType::Command, s);
-  put_u32(o, m.node); put_u32(o, m.term); put_u64(o, m.seq); put_u16(o, m.actuator); put_u8(o, m.desired);
+void encode_msg(const Cmd& m, std::vector<uint8_t>& o) {
+  size_t s; begin(o, MsgType::Cmd, s);
+  put_u32(o, m.node); put_u32(o, m.term); put_u64(o, m.seq); put_u8(o, m.desired);
   seal(o, s);
 }
 void encode_msg(const CmdAck& m, std::vector<uint8_t>& o) {
   size_t s; begin(o, MsgType::CmdAck, s);
-  put_u32(o, m.node); put_u32(o, m.term); put_u64(o, m.seq);
+  put_u32(o, m.node); put_u32(o, m.term); put_u64(o, m.seq); put_u8(o, m.status);
   seal(o, s);
 }
 
@@ -91,17 +90,16 @@ bool decode_msg(const uint8_t* p, size_t n, TeleAck& m) {
   m.node = get_u32(b); m.epoch = get_u32(b + 4); m.key = get_u16(b + 8); m.version = get_u64(b + 10);
   return true;
 }
-
-bool decode_msg(const uint8_t* p, size_t n, Command& m) {
+bool decode_msg(const uint8_t* p, size_t n, Cmd& m) {
   const uint8_t* b; size_t bl;
-  if (!open_frame(p, n, MsgType::Command, b, bl) || bl != 19) return false;
-  m.node = get_u32(b); m.term = get_u32(b + 4); m.seq = get_u64(b + 8); m.actuator = get_u16(b + 16); m.desired = b[18];
+  if (!open_frame(p, n, MsgType::Cmd, b, bl) || bl != 17 || b[16] > 1) return false;
+  m.node = get_u32(b); m.term = get_u32(b + 4); m.seq = get_u64(b + 8); m.desired = b[16];
   return true;
 }
 bool decode_msg(const uint8_t* p, size_t n, CmdAck& m) {
   const uint8_t* b; size_t bl;
-  if (!open_frame(p, n, MsgType::CmdAck, b, bl) || bl != 16) return false;
-  m.node = get_u32(b); m.term = get_u32(b + 4); m.seq = get_u64(b + 8);
+  if (!open_frame(p, n, MsgType::CmdAck, b, bl) || bl != 17 || b[16] > 1) return false;
+  m.node = get_u32(b); m.term = get_u32(b + 4); m.seq = get_u64(b + 8); m.status = b[16];
   return true;
 }
 

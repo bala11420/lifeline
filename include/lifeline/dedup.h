@@ -49,10 +49,6 @@ class VersionGate {
     minor_ = minor;
     return true;
   }
-  // Would accept() succeed? Lets a caller persist BEFORE it commits to the new version.
-  bool newer(uint32_t major, uint64_t minor) const {
-    return !have_ || major > major_ || (major == major_ && minor > minor_);
-  }
   bool have() const { return have_; }
   uint32_t major() const { return major_; }
   uint64_t minor() const { return minor_; }

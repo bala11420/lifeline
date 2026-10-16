@@ -37,15 +37,6 @@ size_t scan(const std::vector<uint8_t>& buf, size_t total, std::vector<JournalEn
           ok = true;
         }
         break;
-      case 4:
-        if (len == 1 + 4 + 8 + 1) {
-          e.kind = Kind::Cmd;
-          e.cmd_term = get_u32(body + 1);
-          e.cmd_seq = get_u64(body + 5);
-          e.cmd_state = body[13];
-          ok = true;
-        }
-        break;
       default:
         break;
     }
@@ -76,27 +67,32 @@ bool Journal::heal() {
   std::vector<uint8_t> buf(f_.size());
   size_t total = buf.empty() ? 0 : f_.read(0, buf.data(), buf.size());
   size_t good = scan(buf, total, nullptr);
+  if (good > fail_off_) good = fail_off_;  // the caller was told IoError: drop a frame that survived
   if (good < total) {
     f_.truncate(good);
     if (!f_.sync()) return false;
     if (f_.size() != good) return false;
   }
   poisoned_ = false;
+  fail_off_ = static_cast<size_t>(-1);
   return true;
 }
 
-Journal::Result Journal::append_frame(const std::vector<uint8_t>& body, size_t limit) {
+Journal::Result Journal::append_frame(const std::vector<uint8_t>& body, bool may_use_reserve) {
   if (poisoned_ && !heal()) return Result::IoError;
   std::vector<uint8_t> frame;
   put_u32(frame, static_cast<uint32_t>(body.size()));
   frame.insert(frame.end(), body.begin(), body.end());
   put_u32(frame, crc32(frame.data(), frame.size()));
 
+  size_t cap = f_.capacity();
+  size_t limit = may_use_reserve ? cap : (cap > reserve_ ? cap - reserve_ : 0);
   size_t before = f_.size();
   if (before + frame.size() > limit) return Result::Full;
 
   if (!f_.append(frame.data(), frame.size()) || !f_.sync()) {
     f_.truncate(before);  // best effort; a dead device ignores this and heal() retries later
+    fail_off_ = before;
     poisoned_ = true;     // never append after a possibly-torn frame without cleaning it first
     return Result::IoError;
   }
@@ -107,7 +103,7 @@ Journal::Result Journal::append_data(const Record& r) {
   std::vector<uint8_t> body;
   put_u8(body, 1);
   encode_body(r, body);
-  return append_frame(body, r.cls == Cls::Critical ? room(sys_) : room(sys_ + reserve_));
+  return append_frame(body, r.cls == Cls::Critical);
 }
 
 Journal::Result Journal::append_ack(Cls c, uint64_t upto) {
@@ -115,23 +111,14 @@ Journal::Result Journal::append_ack(Cls c, uint64_t upto) {
   put_u8(body, 2);
   put_u8(body, static_cast<uint8_t>(c));
   put_u64(body, upto);
-  return append_frame(body, room(sys_));
+  return append_frame(body, true);
 }
 
 Journal::Result Journal::append_epoch(uint32_t epoch) {
   std::vector<uint8_t> body;
   put_u8(body, 3);
   put_u32(body, epoch);
-  return append_frame(body, room(0));
-}
-
-Journal::Result Journal::append_cmd(uint32_t term, uint64_t seq, uint8_t state) {
-  std::vector<uint8_t> body;
-  put_u8(body, 4);
-  put_u32(body, term);
-  put_u64(body, seq);
-  put_u8(body, state);
-  return append_frame(body, room(0));
+  return append_frame(body, true);
 }
 
 }  // namespace lifeline

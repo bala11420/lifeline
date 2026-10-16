@@ -1,40 +1,44 @@
-// Actuator (valve / siren / ventilation) with a PERSISTENT command gate.
-//
-// Rules: commands are ABSOLUTE desired states ordered by (term, seq). A command is applied only if
-// strictly newer than the last applied one. The new (term, seq, state) is made durable BEFORE the
-// output changes, and at boot the output is reconciled to the persisted state. So:
-//   - duplicate and stale commands cannot introduce a newer decision, even after a reboot
-//   - accepted commands persist a desired state; repeated application converges to that state
-//   - a crash between "persist" and "apply" does not lose the command (boot re-applies the state)
-//   - a failed persist means the command is NOT applied and NOT acked, so the gateway retries
-// This gives idempotent convergence to the desired state; it is not a claim of exactly-once
-// physical actuation.
+// Actuator-side command handling: desired-state commands ordered by (term, seq), persisted
+// BEFORE they take effect, plus a local safety interlock that the network cannot override.
 #pragma once
-#include "lifeline/dedup.h"
-#include "lifeline/journal.h"
 #include "lifeline/messages.h"
+#include "lifeline/protocol.h"
 
 namespace lifeline {
 
+enum class Valve : uint8_t { Open = 0, Closed = 1 };
+// Applied: newer command committed. Duplicate: already committed (same version), harmless.
+// Stale: older than the committed version, rejected. IoError: could not be made durable.
+enum class CmdResult { Applied, Duplicate, Stale, IoError };
+
 class Actuator {
  public:
-  enum class Result { Applied, Stale, IoError };
-  Actuator(Flash& flash, uint16_t actuator_id) : journal_(flash, 0, 0), id_(actuator_id) {}
+  explicit Actuator(Flash& f) : f_(f) {}
 
-  // Recover the persisted gate and drive the output to the persisted desired state.
-  void boot();
-  Result on_command(const Command& c);
+  // Recovers the highest committed command (torn tail removed). Output is reconciled from it.
+  bool boot();
+  CmdResult on_command(const Cmd& c);
 
-  uint8_t output() const { return output_; }  // 0 until a command was ever applied
-  bool has_applied() const { return gate_.have(); }
-  uint32_t term() const { return gate_.major(); }
-  uint64_t seq() const { return gate_.minor(); }
+  // Local hazard input (e.g. gas alarm). While set, the output is forced Closed no matter what
+  // the committed desired state says; clearing it re-reconciles to the desired state.
+  void set_interlock(bool on) { interlock_ = on; }
+  bool interlock() const { return interlock_; }
+
+  Valve desired() const { return desired_; }
+  Valve output() const { return (interlock_ && desired_ == Valve::Open) ? Valve::Closed : desired_; }
+  bool have() const { return have_; }
+  uint32_t term() const { return term_; }
+  uint64_t seq() const { return seq_; }
 
  private:
-  Journal journal_;
-  uint16_t id_;
-  VersionGate gate_;
-  uint8_t output_ = 0;
+  bool heal();
+  Flash& f_;
+  bool have_ = false;
+  bool poisoned_ = false;
+  bool interlock_ = false;
+  uint32_t term_ = 0;
+  uint64_t seq_ = 0;
+  Valve desired_ = Valve::Open;  // normal operation until the first committed command
 };
 
 }  // namespace lifeline

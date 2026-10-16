@@ -1,8 +1,4 @@
 // In-memory Flash with crash-injection hooks, for the simulator and the tests.
-// Fault model (declared): an interrupted append leaves only a prefix of the write (torn tail), and
-// a failed sync() can lose bytes that were never successfully synced. Bytes already made durable
-// by a successful sync() are never deleted by these hooks. This models interrupted appends under
-// that declared model, not every physical power-loss behaviour of a real flash device.
 #pragma once
 #include <vector>
 #include "lifeline/protocol.h"
@@ -57,7 +53,7 @@ class MemFlash : public Flash {
   // The next sync() fails and the device goes dead (power loss between write and flush).
   void arm_sync_failure() { sync_fail_armed_ = true; }
   // Reboot: the device works again. With lose_unsynced=true, bytes never successfully synced
-  // are lost (a failed flush under the declared model); otherwise they stay (a torn tail).
+  // are lost (the realistic outcome of a failed flush); otherwise they stay (a torn tail).
   void power_cycle(bool lose_unsynced = false) {
     dead_ = false;
     budget_ = -1;

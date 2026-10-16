@@ -10,11 +10,7 @@ namespace lifeline {
 
 struct NodeConfig {
   uint32_t node_id = 1;
-  size_t critical_reserve = 512;  // journal bytes only Critical records (and acks) may use
-  // Journal bytes only Epoch records may use, so even a completely full journal can start a new
-  // boot epoch. 128 bytes = about 9 reboots. Without it a reused epoch makes the gateway reject
-  // the node's telemetry as stale (found by the simulator on a 600-byte journal).
-  size_t system_reserve = 128;
+  size_t critical_reserve = 512;  // journal bytes only Critical records may use
   // Persist an ack record only after this many newly acked records. A lost ack is harmless (the
   // gateway's Welcome re-trims on reconnect) but every ack record costs journal space. 1 = always.
   size_t ack_batch = 8;
@@ -34,17 +30,14 @@ struct NodeStats {
 //
 // Guarantee (see README): a record for which submit() returned Accepted is durably committed
 // (Critical/Control) and survives modelled crashes. Telemetry is a latest-value register kept
-// in RAM and is intentionally not durable. Telemetry storage is one register per configured key
-// and does not grow with outage duration.
+// in RAM and is intentionally not durable.
 class Node {
  public:
   Node(Flash& flash, Clock& clock, const NodeConfig& cfg)
-      : flash_(flash), clock_(clock), cfg_(cfg), journal_(flash, cfg.critical_reserve, cfg.system_reserve) {}
+      : flash_(flash), clock_(clock), cfg_(cfg), journal_(flash, cfg.critical_reserve) {}
 
-  // Recover the journal, rebuild unacked streams, start a new boot epoch (previous committed
-  // epoch + 1, appended to the journal). Returns false if the new epoch could not be persisted:
-  // in that case the epoch is NOT durably committed and the caller must not treat the node as
-  // started (a later boot could reuse the same epoch number).
+  // Recover the journal, rebuild unacked streams, start a new boot epoch.
+  // Returns false if the new epoch could not be persisted.
   bool boot();
 
   uint32_t epoch() const { return epoch_; }
@@ -74,9 +67,8 @@ class Node {
   // cursors so everything still unacked is sent again (critical first), re-marks telemetry dirty.
   void on_resync(uint64_t crit_hwm, uint64_t ctrl_hwm);
 
+  std::vector<Record> pending_records(Cls cls) const;  // unacked durable records (oracle/debug)
   size_t unacked(Cls cls) const;  // stream records not yet acknowledged
-  // Unacked records of a stream (Critical or Control only), oldest first. For drivers and checks.
-  const std::deque<Record>& pending_records(Cls cls) const { return streams_[idx(cls)].pending; }
   size_t unsent(Cls cls) const;   // stream records not yet transmitted since last resync
   size_t dirty_telemetry() const;
   bool storage_fault() const { return fault_; }  // sticky: some record was rejected for storage

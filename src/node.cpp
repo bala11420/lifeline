@@ -176,6 +176,14 @@ size_t Node::retry_telemetry() {
   return n;
 }
 
+std::vector<Record> Node::pending_records(Cls cls) const {
+  std::vector<Record> v;
+  if (cls == Cls::Telemetry) return v;
+  const Stream& s = streams_[idx(cls)];
+  v.assign(s.pending.begin(), s.pending.end());
+  return v;
+}
+
 size_t Node::unacked(Cls cls) const {
   return cls == Cls::Telemetry ? 0 : streams_[idx(cls)].pending.size();
 }
