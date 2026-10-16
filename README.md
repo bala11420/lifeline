@@ -167,7 +167,7 @@ with its journal stored in LittleFS. Setup and the full command list are in [`wo
 | `l` | Lost ACK: no duplicate effect |
 
 ![Wokwi simulation](Wokwisimulation.jpeg)
-![Wokwi simulation, second view](Wokwisimulation2.jpeg)
+![Wokwi simulation, second view](wokwisimulation2.jpeg)
 
 **What this demo is, exactly:** a Wokwi simulation of the LIFELINE core on an ESP32 with LittleFS. The power loss is a
 fault injected in software, and the gateway inside the sketch is a stand-in. The full protocol is verified separately
