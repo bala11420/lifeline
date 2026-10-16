@@ -191,7 +191,7 @@ Read these figures carefully:
 - Reproduce them from the current commit and store the output in `results/` with: commit hash, seed range,
   configuration, per-run violation counts, any failing seeds, and how many runs completed within their deadline.
 - Simulator numbers, real-broker numbers and hardware numbers must be reported separately.
-
+![Simulation results](lifeline.jpeg)
 ## 9. What each kind of evidence supports
 
 | Evidence | Supports |
